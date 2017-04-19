@@ -570,7 +570,7 @@ static void VS_CC autocropCreate(const VSMap *in, VSMap *out, void *userData, VS
 // Init
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    configFunc("autocrop.infiistgott.info", "acrop", "VapourSynth Auto Crop", VAPOURSYNTH_API_VERSION, 1, plugin);
+    configFunc("info.infiistgott.autocrop", "acrop", "VapourSynth AutoCrop", VAPOURSYNTH_API_VERSION, 1, plugin);
     registerFunc("AutoCrop", "clip:clip;range:int:opt;top:int:opt;bottom:int:opt;left:int:opt;right:int:opt;color:int[]:opt;color_second:int[]:opt", autocropCreate, 0, plugin);
     registerFunc("CropValues", "clip:clip;range:int:opt;top:int:opt;bottom:int:opt;left:int:opt;right:int:opt;color:int[]:opt;color_second:int[]:opt", cropvaluesCreate, 0, plugin);
     registerFunc("CropProp", "clip:clip", croppropCreate, 0, plugin);
