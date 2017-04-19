@@ -25,6 +25,6 @@ color = {0,123,123}
 color_second = {21,133,133}  
   
 # Thanks  
-kageru, Attila, stux!, and Myrsloik  
+kageru, Attila, stux!, and Myrsloik 
 
-
+# Work in Progress  
