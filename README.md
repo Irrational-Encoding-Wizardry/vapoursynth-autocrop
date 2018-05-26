@@ -2,29 +2,28 @@
 AutoCrop for Vapoursynth  
 
 # Usage  
-All in One  
-```acrop.AutoCrop(clip, range, top, bottom, left, right, color, color_second)```  
-Search and crop borders with matching color ... Output is a clip with varying dimensions  
+AutoCrop  
+```python
+acrop.AutoCrop(clip src, int range=4, int top=range, int bottom=range, int left=range, int right=range, int[] color=[0,123,123], int[] color_second=[21,133,133])
+```  
 
 Search only  
-```acrop.CropValues(clip, range, top, bottom, left, right, color, color_second)```  
-Write crop values into frame props ...  
+```python
+acrop.CropValues(clip src, int range=4, int top=range, int bottom=range, int left=range, int right=range, int[] color=[0,123,123], int[] color_second=[21,133,133])
+```
 
-Crop only  
-```acrop.CropProp(clip)```  
-Crop the Clip by the values given by acrop.CropValues ...  Output is a clip with varying dimensions  
+## Compilation
 
-# Commands  
-Optional:  
-range, top, bottom, left, right, color, color_second  
+### Linux
+```
+g++ -std=c++11 -shared -fPIC -O2 autocrop.cpp -o libautocrop.so
+```
 
-Default:  
-range = 4  
-top, bottom, left, right = range  
-color = {0,123,123}  
-color_second = {21,133,133}  
-  
+### Cross-compilation for Windows
+```
+x86_64-w64-mingw32-g++ -std=c++11 -shared -fPIC -O2 autocrop.cpp -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -s -o autocrop.dll
+```
+
+
 # Thanks  
-kageru, Attila, stux!, and Myrsloik 
-
-# Work in Progress  
+kageru, Attila, stux!, and Myrsloik

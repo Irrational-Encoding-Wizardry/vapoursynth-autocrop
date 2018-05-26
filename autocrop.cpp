@@ -1,5 +1,5 @@
-#include "VapourSynth.h"
-#include "VSHelper.h"
+#include <vapoursynth/VapourSynth.h>
+#include <vapoursynth/VSHelper.h>
 #include <iostream>
 #define SET_COLOR_RESAMPLE 0x0000001
 #define setBlack(color, format) {uint32_t b1[3] = {0, 123, 123}; setColor(color, format, b1, SET_COLOR_RESAMPLE);}
@@ -19,22 +19,25 @@ typedef struct {
     int right;
     uint32_t color[3];
     uint32_t color_second[3];
-    int x;
-    int y;
-    int x2;
-    int y2;
-    int width;
-    int height;
-} InvertData;
+} AutoCropData;
 
-struct CropValues{
-    int top_crop[3];
-    int bottom_crop[3];
-    int left_crop[3];
-    int right_crop[3];
+struct CropPlaneValues {
+    int topArray[3];
+    int bottomArray[3];
+    int leftArray[3];
+    int rightArray[3];
 };
 
-static inline void setColor(OUT uint32_t color[3], const IN VSFormat *format, IN uint32_t base[3], int flags=0) {
+struct CropFrameValues {
+    int top;
+    int bottom;
+    int left;
+    int right;
+    int width;
+    int height;
+};
+
+inline void setColor(OUT uint32_t color[3], const IN VSFormat *format, IN uint32_t base[3], int flags=0) {
     if (flags & SET_COLOR_RESAMPLE && format->sampleType == stInteger) {
         for (int i = 0; i<3; i++)
             base[i] <<= (format->bitsPerSample - 8);
@@ -44,286 +47,157 @@ static inline void setColor(OUT uint32_t color[3], const IN VSFormat *format, IN
         color[i] = base[i];
 }
 
-static int ColorCheck(int crop_plane0, int crop_plane1, int crop_plane2, void **instanceData, int side = 1){
-    InvertData *d = (InvertData *) * instanceData;
-    int crop_plane;
+int checkSubSampling(int cropValueArray[3], int subSampling){
+    int cropValue;
 
-    if(side){
-        crop_plane = std::min(std::min(crop_plane0, crop_plane1 << d->vi->format->subSamplingW), crop_plane2 << d->vi->format->subSamplingW);
-        crop_plane = crop_plane - (crop_plane % (1 << d->vi->format->subSamplingW));
-    }
-    else{
-        crop_plane = std::min(std::min(crop_plane0, crop_plane1 << d->vi->format->subSamplingH), crop_plane2 << d->vi->format->subSamplingH);
-        crop_plane = crop_plane - (crop_plane % (1 << d->vi->format->subSamplingH));
-    }
-    return crop_plane;
+    cropValue = std::min(std::min(cropValueArray[0], cropValueArray[1] << subSampling), cropValueArray[2] << subSampling);
+    cropValue = cropValue - (cropValue % (1 << subSampling));
+
+    return cropValue;
 }
 
 template <typename Bit>
-void getCropValues(struct CropValues *c, const Bit *srcp, int src_stride, int w, int h, int color_second, int color2,
-                   int top_range, int bottom_range, int left_range, int right_range, int ArrayNumber){
-    int top = 0;
-    int top_crop = 0;
-    int bottom_crop = 0;
-    int left_crop = left_range;
-    int right_crop = right_range;
-    bool left_check = false;
-    bool right_check = false;
+void getCropValues(CropPlaneValues *c, const Bit *srcp, int src_stride, int w, int h, int color, int color2,
+                   int topRange, int bottomRange, int leftRange, int rightRange, int plane) {
+    int topValue = 0;
+    int bottomValue = bottomRange;
+    int leftValue = leftRange;
+    int rightValue = rightRange;
     for (int y = 0; y < h; y++) {
         //top
-        if (top < top_range) {
+        if (y < topRange) {
             for (int x = 0; x < w; x += 10) {
-                if (!(color_second <= srcp[x] && srcp[x] <= color2)) {
-                    top = top_range;
+                if (!(color <= srcp[x] && srcp[x] <= color2)) {
+                    topRange = 0;
                     break;
                 }
             }
-            if (top < top_range) {
-                top++;
-                top_crop++;
+            if (topRange) {
+                topValue++;
             }
         }
         //left
-        for (int x = 0; x < left_range; x++) {
-            if (!(color_second <= srcp[x] && srcp[x] <= color2)) {
-                left_check = true;
-                if (left_crop >= x) {
-                    left_crop = x;
+        for (int x = 0; x < leftRange; x++) {
+            if (!(color <= srcp[x] && srcp[x] <= color2)) {
+                if (leftValue >= x) {
+                    leftValue = x;
                 }
             }
         }
         //right
-        for (int x = w - right_range; x < w; x++) {
-            if (!(color_second <= srcp[x] && srcp[x] <= color2)) {
-                right_check = true;
-                if (right_crop >= w - x) {
-                    right_crop = w - x - 1;
+        for (int x = w - rightRange; x < w; x++) {
+            if (!(color <= srcp[x] && srcp[x] <= color2)) {
+                if (rightValue >= w - x) {
+                    rightValue = w - x - 1;
                 }
             }
         }
         //bottom
-        bool r = false;
-        if (y >= h - bottom_range) {
+        if (y >= h - bottomRange) {
             for (int x = 0; x < w; x += 10) {
-                if (!r) {
-                    if (!(color_second <= srcp[x] && srcp[x] <= color2)) {
-                        r = true;
-                    }
+                if (!(color <= srcp[x] && srcp[x] <= color2)) {
+                    bottomValue = h - (y + 1);
+                    break;
                 }
-            }
-            if (!r) {
-                bottom_crop++;
             }
         }
         srcp += src_stride;
     }
-    if (right_check && right_crop == right_range){
-        right_crop = 0;
-    }
-    if (left_check && left_crop == left_range){
-        left_crop = 0;
-    }
 
-    c->top_crop[ArrayNumber] = top_crop;
-    c->bottom_crop[ArrayNumber] = bottom_crop;
-    c->left_crop[ArrayNumber] = left_crop;
-    c->right_crop[ArrayNumber] = right_crop;
+    c->topArray[plane] = topValue;
+    c->bottomArray[plane] = bottomValue;
+    c->leftArray[plane] = leftValue;
+    c->rightArray[plane] = rightValue;
 }
 
 template <typename Bit>
-void getFramePlane(const VSFrameRef *src, void **instanceData, const VSAPI *vsapi){
-    InvertData *d = (InvertData *) * instanceData;
-    struct CropValues c;
-    const VSFormat *fi = d->vi->format;
+void getFramePlane(const VSFrameRef *src, AutoCropData *data, const VSAPI *vsapi, CropFrameValues *cFrame) {
+    CropPlaneValues cPlane{};
+    const VSFormat *fi = data->vi->format;
 
     for (int plane = 0; plane < fi->numPlanes; plane++) {
-        const Bit *srcp = (const Bit *) vsapi->getReadPtr(src, plane);
+        const auto *srcp = (const Bit *) vsapi->getReadPtr(src, plane);
         int src_stride = vsapi->getStride(src, plane)  / sizeof(Bit);
         int h = vsapi->getFrameHeight(src, plane);
         int w = vsapi->getFrameWidth(src, plane);
+
         if (plane == 0){
-            getCropValues<Bit>(&c, srcp, src_stride, w, h, d->color[0], d->color_second[0], d->top, d->bottom, d->left, d->right, 0);
+            getCropValues<Bit>(&cPlane, srcp, src_stride, w, h, data->color[0], data->color_second[0], data->top,
+                               data->bottom, data->left, data->right, plane);
         }
         else if(plane == 1){
-            if (d->vi->format->subSamplingH == 0 && d->vi->format->subSamplingW == 0) {
-                getCropValues<Bit>(&c, srcp, src_stride, w, h, d->color[1], d->color_second[1], d->top, d->bottom, d->left, d->right, 1);
+            if (data->vi->format->subSamplingH == 0 && data->vi->format->subSamplingW == 0) {
+                getCropValues<Bit>(&cPlane, srcp, src_stride, w, h, data->color[1], data->color_second[1], data->top,
+                                   data->bottom, data->left, data->right, plane);
             }
-            else if (d->vi->format->subSamplingH == 1 && d->vi->format->subSamplingW == 1){
-                getCropValues<Bit>(&c, srcp, src_stride, w, h, d->color[1], d->color_second[1], d->top/2, d->bottom/2, d->left/2, d->right/2, 1);
+            else if (data->vi->format->subSamplingH == 1 && data->vi->format->subSamplingW == 1) {
+                getCropValues<Bit>(&cPlane, srcp, src_stride, w, h, data->color[1], data->color_second[1], data->top/2,
+                                   data->bottom/2, data->left/2, data->right/2, plane);
             }
         }
-        else{
-            if (d->vi->format->subSamplingH == 0 && d->vi->format->subSamplingW == 0) {
-                getCropValues<Bit>(&c, srcp, src_stride, w, h, d->color[2], d->color_second[2], d->top, d->bottom, d->left, d->right, 2);
+        else {
+            if (data->vi->format->subSamplingH == 0 && data->vi->format->subSamplingW == 0) {
+                getCropValues<Bit>(&cPlane, srcp, src_stride, w, h, data->color[2], data->color_second[2], data->top,
+                                   data->bottom, data->left, data->right, plane);
             }
-            else if (d->vi->format->subSamplingH == 1 && d->vi->format->subSamplingW == 1){
-                getCropValues<Bit>(&c, srcp, src_stride, w, h, d->color[2], d->color_second[2], d->top/2, d->bottom/2, d->left/2, d->right/2, 2);
+            else if (data->vi->format->subSamplingH == 1 && data->vi->format->subSamplingW == 1){
+                getCropValues<Bit>(&cPlane, srcp, src_stride, w, h, data->color[2], data->color_second[2], data->top/2,
+                                   data->bottom/2, data->left/2, data->right/2, plane);
             }
         }
     }
-    int side = 0;
 
-    d->x = int64ToIntS(ColorCheck(c.left_crop[0], c.left_crop[1], c.left_crop[2], instanceData));
-    d->x2 = int64ToIntS(ColorCheck(c.right_crop[0], c.right_crop[1], c.right_crop[2], instanceData));
-    d->y = int64ToIntS(ColorCheck(c.top_crop[0], c.top_crop[1], c.top_crop[2], instanceData, side));
-    d->y2 = int64ToIntS(ColorCheck(c.bottom_crop[0], c.bottom_crop[1], c.bottom_crop[2], instanceData, side));
-    d->height = d->vi->height - d->y - d->y2;
-    d->width = d->vi->width - d->x - d->x2;
-}
-
-/////////////////
-// CropProp
-
-static void VS_CC croppropInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *) * instanceData;
-    VSVideoInfo vi_finish = *d->vi_finish;
-    vi_finish.height = 0;
-    vi_finish.width = 0;
-    vsapi->setVideoInfo(&vi_finish, 1, node);
-}
-
-static const VSFrameRef *VS_CC croppropGetFrame(int n, int activationReason, void **instanceData, void **frameData,
-                                                VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *) * instanceData;
-    const char *top = "CropTopValue";
-    const char *bottom = "CropBottomValue";
-    const char *left = "CropLeftValue";
-    const char *right = "CropRightValue";
-    int err;
-
-
-    if (activationReason == arInitial) {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
-    } else if (activationReason == arAllFramesReady) {
-        const VSFrameRef *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-        const VSFormat *fi = d->vi->format;
-        const VSMap *prop = vsapi->getFramePropsRO(src);
-
-        d->y = static_cast<int>(vsapi->propGetInt(prop, top, 0, &err));
-        if(err){
-            vsapi->freeFrame(src);
-            vsapi->setFilterError("CropProp: Cant Read Frame Prop ... Fatal Error", frameCtx);
-            return 0;
-        }
-
-        d->x = static_cast<int>(vsapi->propGetInt(prop, left, 0, &err));
-        if(err){
-            vsapi->freeFrame(src);
-            vsapi->setFilterError("CropProp: Cant Read Frame Prop ... Fatal Error", frameCtx);
-            return 0;
-        }
-
-        d->y2 = static_cast<int>(vsapi->propGetInt(prop, bottom, 0, &err));
-        if(err){
-            vsapi->freeFrame(src);
-            vsapi->setFilterError("CropProp: Cant Read Frame Prop ... Fatal Error", frameCtx);
-            return 0;
-        }
-
-        d->x2 = static_cast<int>(vsapi->propGetInt(prop, right, 0, &err));
-        if(err){
-            vsapi->freeFrame(src);
-            vsapi->setFilterError("CropProp: Cant Read Frame Prop ... Fatal Error", frameCtx);
-            return 0;
-        }
-
-        d->height = d->vi->height - d->y - d->y2;
-        d->width = d->vi->width - d->x - d->x2;
-
-        //from https://github.com/vapoursynth/vapoursynth/blob/738f2be63b8d2b19c73b5e20116058f12f9b278d/src/core/simplefilters.c#L132
-        VSFrameRef *dst_finish = vsapi->newVideoFrame(fi, d->width, d->height, src, core);
-        for (int plane_new = 0; plane_new < fi->numPlanes; plane_new++) {
-            int srcstride = vsapi->getStride(src, plane_new);
-            int dststride = vsapi->getStride(dst_finish, plane_new);
-            const uint8_t *srcdata = vsapi->getReadPtr(src, plane_new);
-            uint8_t *dstdata = vsapi->getWritePtr(dst_finish, plane_new);
-            srcdata += srcstride * (d->y >> (plane_new ? fi->subSamplingH : 0));
-            srcdata += (d->x >> (plane_new ? fi->subSamplingW : 0)) * fi->bytesPerSample;
-            vs_bitblt(dstdata, dststride, srcdata, srcstride, (d->width >> (plane_new ? fi->subSamplingW : 0)) * fi->bytesPerSample, vsapi->getFrameHeight(dst_finish, plane_new));
-        }
-        vsapi->freeFrame(src);
-
-        return dst_finish;
-    }
-
-    return 0;
-}
-
-static void VS_CC croppropFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *)instanceData;
-    vsapi->freeNode(d->node);
-    free(d);
-}
-
-static void VS_CC croppropCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-    InvertData d;
-    InvertData *data;
-
-    d.node = vsapi->propGetNode(in, "clip", 0, 0);
-    d.vi_finish = vsapi->getVideoInfo(d.node);
-    d.vi = vsapi->getVideoInfo(d.node);
-
-    if (!isConstantFormat(d.vi) || d.vi->format->sampleType != stInteger || d.vi->format->bitsPerSample < 8 || d.vi->format->bitsPerSample > 16) {
-        vsapi->setError(out, "AutoCrop: only constant format 8...16Bit integer input supported");
-        vsapi->freeNode(d.node);
-        return;
-    }
-
-    if (!(d.vi->format->colorFamily == cmYCoCg || d.vi->format->colorFamily == cmYUV)){
-        vsapi->setError(out, "AutoCrop: only YUV or YCoCg  input supported");
-        vsapi->freeNode(d.node);
-        return;
-    }
-
-    data = static_cast<InvertData*>(malloc(sizeof(d)));
-    *data = d;
-
-    vsapi->createFilter(in, out, "CropProp", croppropInit, croppropGetFrame, croppropFree, fmParallel, 0, data, core);
-
+    cFrame->top    = checkSubSampling(cPlane.topArray, data->vi->format->subSamplingH);
+    cFrame->bottom = checkSubSampling(cPlane.bottomArray, data->vi->format->subSamplingH);
+    cFrame->left   = checkSubSampling(cPlane.leftArray, data->vi->format->subSamplingW);
+    cFrame->right  = checkSubSampling(cPlane.rightArray, data->vi->format->subSamplingW);
+    cFrame->height   = data->vi->height - cFrame->top - cFrame->bottom;
+    cFrame->width    = data->vi->width - cFrame->left - cFrame->right;
 }
 
 /////////////////
 // CropValues
 
-static void VS_CC cropvaluesInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *) * instanceData;
-    VSVideoInfo vi_finish = *d->vi_finish;
+static void VS_CC cropValuesInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
+    auto *data = (AutoCropData *) * instanceData;
+    VSVideoInfo vi_finish = *data->vi_finish;
     vsapi->setVideoInfo(&vi_finish, 1, node);
 }
 
-static const VSFrameRef *VS_CC cropvaluesGetFrame(int n, int activationReason, void **instanceData, void **frameData,
-                                                VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *) * instanceData;
+static const VSFrameRef *VS_CC cropValuesGetFrame(int n, int activationReason, void **instanceData, void **frameData,
+                                                  VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+    auto *data = (AutoCropData *) * instanceData;
     const char *top = "CropTopValue";
     const char *bottom = "CropBottomValue";
     const char *left = "CropLeftValue";
     const char *right = "CropRightValue";
 
     if (activationReason == arInitial) {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
-    } else if (activationReason == arAllFramesReady) {
-        const VSFrameRef *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-        const VSFormat *fi = d->vi->format;
+        vsapi->requestFrameFilter(n, data->node, frameCtx);
+    }
+    else if (activationReason == arAllFramesReady) {
+        const VSFrameRef *src = vsapi->getFrameFilter(n, data->node, frameCtx);
+        const VSFormat *fi = data->vi->format;
+        CropFrameValues cFrame{};
 
-        if (d->vi->format->sampleType == stInteger && d->vi->format->bitsPerSample == 8) {
-            getFramePlane<uint8_t>(src, instanceData, vsapi);
-        } else if (d->vi->format->sampleType == stInteger && d->vi->format->bitsPerSample <= 16){
-            getFramePlane<uint16_t>(src, instanceData, vsapi);
+        if (data->vi->format->sampleType == stInteger && data->vi->format->bitsPerSample == 8) {
+            getFramePlane<uint8_t>(src, data, vsapi, &cFrame);
+        } else if (data->vi->format->sampleType == stInteger && data->vi->format->bitsPerSample <= 16){
+            getFramePlane<uint16_t>(src, data, vsapi, &cFrame);
         }
 
         VSFrameRef *dst = vsapi->copyFrame(src, core);
-        int plane;
-        for (plane = 0; plane < fi->numPlanes; plane++) {
+        for (int plane = 0; plane < fi->numPlanes; plane++) {
             vsapi->getWritePtr(dst, plane);
         }
 
         VSMap *dstProps = vsapi->getFramePropsRW(dst);
 
         if (fi->sampleType == stInteger) {
-            vsapi->propSetInt(dstProps, top, d->y, paAppend);
-            vsapi->propSetInt(dstProps, bottom, d->y2, paAppend);
-            vsapi->propSetInt(dstProps, left, d->x, paAppend);
-            vsapi->propSetInt(dstProps, right, d->x2, paAppend);
+            vsapi->propSetInt(dstProps, top, cFrame.top, paAppend);
+            vsapi->propSetInt(dstProps, bottom, cFrame.bottom, paAppend);
+            vsapi->propSetInt(dstProps, left, cFrame.left, paAppend);
+            vsapi->propSetInt(dstProps, right, cFrame.right, paAppend);
         }
         vsapi->freeFrame(src);
 
@@ -333,15 +207,15 @@ static const VSFrameRef *VS_CC cropvaluesGetFrame(int n, int activationReason, v
     return 0;
 }
 
-static void VS_CC cropvaluesFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *)instanceData;
-    vsapi->freeNode(d->node);
-    free(d);
+static void VS_CC cropValuesFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
+    auto *data = (AutoCropData *)instanceData;
+    vsapi->freeNode(data->node);
+    free(data);
 }
 
-static void VS_CC cropvaluesCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-    InvertData d;
-    InvertData *data;
+static void VS_CC cropValuesCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+    AutoCropData d;
+    AutoCropData *data;
     int err;
 
     d.node = vsapi->propGetNode(in, "clip", 0, 0);
@@ -402,7 +276,7 @@ static void VS_CC cropvaluesCreate(const VSMap *in, VSMap *out, void *userData, 
 
     if (ncolors == numcomponents) {
         for (int i = 0; i < ncolors; i++) {
-            color_base[i] = vsapi->propGetInt(in, "color", i, 0);
+            color_base[i] = static_cast<uint32_t>(vsapi->propGetInt(in, "color", i, 0));
         }
         setColorSimple(d.color, d.vi->format, color_base);
     }
@@ -412,7 +286,7 @@ static void VS_CC cropvaluesCreate(const VSMap *in, VSMap *out, void *userData, 
 
     if (ncolors1 == numcomponents) {
         for (int i = 0; i < ncolors1; i++) {
-            color_base1[i] = vsapi->propGetInt(in, "color_second", i, 0);
+            color_base1[i] = static_cast<uint32_t>(vsapi->propGetInt(in, "color_second", i, 0));
         }
         setColorSimple(d.color_second, d.vi->format, color_base1);
     }
@@ -420,18 +294,18 @@ static void VS_CC cropvaluesCreate(const VSMap *in, VSMap *out, void *userData, 
         setBlack2(d.color_second, d.vi->format);
     }
 
-    data = static_cast<InvertData*>(malloc(sizeof(d)));
+    data = static_cast<AutoCropData*>(malloc(sizeof(d)));
     *data = d;
 
-    vsapi->createFilter(in, out, "CropValues", cropvaluesInit, cropvaluesGetFrame, cropvaluesFree, fmParallel, 0, data, core);
+    vsapi->createFilter(in, out, "CropValues", cropValuesInit, cropValuesGetFrame, cropValuesFree, fmParallel, 0, data, core);
 }
 
 /////////////////
 // AutoCrop
 
 static void VS_CC autocropInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *) * instanceData;
-    VSVideoInfo vi_finish = *d->vi_finish;
+    auto *data = (AutoCropData *) * instanceData;
+    VSVideoInfo vi_finish = *data->vi_finish;
     vi_finish.height = 0;
     vi_finish.width = 0;
     vsapi->setVideoInfo(&vi_finish, 1, node);
@@ -439,31 +313,33 @@ static void VS_CC autocropInit(VSMap *in, VSMap *out, void **instanceData, VSNod
 
 static const VSFrameRef *VS_CC autocropGetFrame(int n, int activationReason, void **instanceData, void **frameData,
                                                 VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *) * instanceData;
+    auto *data = (AutoCropData *) * instanceData;
 
     if (activationReason == arInitial) {
-        vsapi->requestFrameFilter(n, d->node, frameCtx);
+        vsapi->requestFrameFilter(n, data->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        const VSFrameRef *src = vsapi->getFrameFilter(n, d->node, frameCtx);
+        const VSFrameRef *src = vsapi->getFrameFilter(n, data->node, frameCtx);
+        const VSFormat *fi = data->vi->format;
+        CropFrameValues cFrame{};
 
-        const VSFormat *fi = d->vi->format;
-
-        if (d->vi->format->sampleType == stInteger && d->vi->format->bitsPerSample == 8) {
-            getFramePlane<uint8_t>(src, instanceData, vsapi);
-        } else if (d->vi->format->sampleType == stInteger && d->vi->format->bitsPerSample <= 16){
-            getFramePlane<uint16_t>(src, instanceData, vsapi);
+        if (data->vi->format->sampleType == stInteger && data->vi->format->bitsPerSample == 8) {
+            getFramePlane<uint8_t>(src, data, vsapi, &cFrame);
+        } else if (data->vi->format->sampleType == stInteger && data->vi->format->bitsPerSample <= 16){
+            getFramePlane<uint16_t>(src, data, vsapi, &cFrame);
         }
 
         //from https://github.com/vapoursynth/vapoursynth/blob/738f2be63b8d2b19c73b5e20116058f12f9b278d/src/core/simplefilters.c#L132
-        VSFrameRef *dst_finish = vsapi->newVideoFrame(fi, d->width, d->height, src, core);
+        VSFrameRef *dst_finish = vsapi->newVideoFrame(fi, cFrame.width, cFrame.height, src, core);
         for (int plane_new = 0; plane_new < fi->numPlanes; plane_new++) {
             int srcstride = vsapi->getStride(src, plane_new);
             int dststride = vsapi->getStride(dst_finish, plane_new);
             const uint8_t *srcdata = vsapi->getReadPtr(src, plane_new);
             uint8_t *dstdata = vsapi->getWritePtr(dst_finish, plane_new);
-            srcdata += srcstride * (d->y >> (plane_new ? fi->subSamplingH : 0));
-            srcdata += (d->x >> (plane_new ? fi->subSamplingW : 0)) * fi->bytesPerSample;
-            vs_bitblt(dstdata, dststride, srcdata, srcstride, (d->width >> (plane_new ? fi->subSamplingW : 0)) * fi->bytesPerSample, vsapi->getFrameHeight(dst_finish, plane_new));
+            srcdata += srcstride * (cFrame.top >> (plane_new ? fi->subSamplingH : 0));
+            srcdata += (cFrame.left >> (plane_new ? fi->subSamplingW : 0)) * fi->bytesPerSample;
+            vs_bitblt(dstdata, dststride, srcdata, srcstride,
+                      (cFrame.width >> (plane_new ? fi->subSamplingW : 0)) * fi->bytesPerSample,
+                      vsapi->getFrameHeight(dst_finish, plane_new));
         }
         vsapi->freeFrame(src);
 
@@ -474,14 +350,14 @@ static const VSFrameRef *VS_CC autocropGetFrame(int n, int activationReason, voi
 }
 
 static void VS_CC autocropFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    InvertData *d = (InvertData *)instanceData;
-    vsapi->freeNode(d->node);
-    free(d);
+    auto *data = (AutoCropData *)instanceData;
+    vsapi->freeNode(data->node);
+    free(data);
 }
 
 static void VS_CC autocropCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-    InvertData d;
-    InvertData *data;
+    AutoCropData d;
+    AutoCropData *data;
     uint32_t color_base[3];
     uint32_t color_base1[3];
     int err;
@@ -542,7 +418,7 @@ static void VS_CC autocropCreate(const VSMap *in, VSMap *out, void *userData, VS
 
     if (ncolors == numcomponents) {
         for (int i = 0; i < ncolors; i++) {
-            color_base[i] = vsapi->propGetInt(in, "color", i, 0);
+            color_base[i] = static_cast<uint32_t>(vsapi->propGetInt(in, "color", i, 0));
         }
         setColorSimple(d.color, d.vi->format, color_base);
     }
@@ -552,26 +428,24 @@ static void VS_CC autocropCreate(const VSMap *in, VSMap *out, void *userData, VS
 
     if (ncolors1 == numcomponents) {
         for (int i = 0; i < ncolors1; i++) {
-            color_base1[i] = vsapi->propGetInt(in, "color_second", i, 0);
+            color_base1[i] = static_cast<uint32_t>(vsapi->propGetInt(in, "color_second", i, 0));
         }
         setColorSimple(d.color_second, d.vi->format, color_base1);
     }
     else{
         setBlack2(d.color_second, d.vi->format);
     }
-    data = static_cast<InvertData*>(malloc(sizeof(d)));
+    data = static_cast<AutoCropData*>(malloc(sizeof(d)));
     *data = d;
 
     vsapi->createFilter(in, out, "AutoCrop", autocropInit, autocropGetFrame, autocropFree, fmParallel, 0, data, core);
-
 }
 
 //////////////////////////////////////////
 // Init
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    configFunc("info.infiistgott.autocrop", "acrop", "VapourSynth AutoCrop", VAPOURSYNTH_API_VERSION, 1, plugin);
+    configFunc("moe.infi.autocrop", "acrop", "VapourSynth AutoCrop", VAPOURSYNTH_API_VERSION, 1, plugin);
     registerFunc("AutoCrop", "clip:clip;range:int:opt;top:int:opt;bottom:int:opt;left:int:opt;right:int:opt;color:int[]:opt;color_second:int[]:opt", autocropCreate, 0, plugin);
-    registerFunc("CropValues", "clip:clip;range:int:opt;top:int:opt;bottom:int:opt;left:int:opt;right:int:opt;color:int[]:opt;color_second:int[]:opt", cropvaluesCreate, 0, plugin);
-    registerFunc("CropProp", "clip:clip", croppropCreate, 0, plugin);
+    registerFunc("CropValues", "clip:clip;range:int:opt;top:int:opt;bottom:int:opt;left:int:opt;right:int:opt;color:int[]:opt;color_second:int[]:opt", cropValuesCreate, 0, plugin);
 }
