@@ -1,5 +1,5 @@
-#include <vapoursynth/VapourSynth.h>
-#include <vapoursynth/VSHelper.h>
+#include "VapourSynth.h"
+#include "VSHelper.h"
 #include <iostream>
 #define SET_COLOR_RESAMPLE 0x0000001
 #define setBlack(color, format) {uint32_t b1[3] = {0, 123, 123}; setColor(color, format, b1, SET_COLOR_RESAMPLE);}
